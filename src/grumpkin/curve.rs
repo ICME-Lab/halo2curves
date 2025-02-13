@@ -1,36 +1,42 @@
-use core::{
-    cmp,
-    fmt::Debug,
-    iter::Sum,
-    ops::{Add, Mul, Neg, Sub},
+use crate::arithmetic::mul_512;
+use crate::arithmetic::sbb;
+use crate::arithmetic::CurveEndo;
+use crate::arithmetic::EndoParameters;
+use crate::ff::WithSmallOrderMulGroup;
+use crate::ff::{Field, PrimeField};
+use crate::group::Curve;
+use crate::group::{prime::PrimeCurveAffine, Group, GroupEncoding};
+use crate::grumpkin::Fq;
+use crate::grumpkin::Fr;
+use crate::hash_to_curve::svdw_hash_to_curve;
+use crate::{
+    endo, impl_add_binop_specify_output, impl_binops_additive, impl_binops_additive_specify_output,
+    impl_binops_multiplicative, impl_binops_multiplicative_mixed, impl_sub_binop_specify_output,
+    new_curve_impl,
 };
-
+use crate::{Coordinates, CurveAffine, CurveExt};
+use core::cmp;
+use core::fmt::Debug;
+use core::iter::Sum;
+use core::ops::{Add, Mul, Neg, Sub};
 use rand::RngCore;
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
-use crate::{
-    arithmetic::{mul_512, sbb, CurveEndo, EndoParameters},
-    endo,
-    ff::{Field, PrimeField, WithSmallOrderMulGroup},
-    group::{prime::PrimeCurveAffine, Curve, Group, GroupEncoding},
-    grumpkin::{Fq, Fr},
-    impl_binops_additive, impl_binops_additive_specify_output, impl_binops_multiplicative,
-    impl_binops_multiplicative_mixed, new_curve_impl, Coordinates, CurveAffine, CurveExt,
-};
+#[cfg(feature = "derive_serde")]
+use serde::{Deserialize, Serialize};
 
 new_curve_impl!(
     (pub),
     G1,
     G1Affine,
+    false,
     Fq,
     Fr,
     (G1_GENERATOR_X, G1_GENERATOR_Y),
     G1_A,
     G1_B,
     "grumpkin_g1",
-    |domain_prefix| crate::hash_to_curve::hash_to_curve(domain_prefix, G1::default_hash_to_curve_suite()),
-    crate::serde::CompressedFlagConfig::TwoSpare,
-    standard_sign
+    |curve_id, domain_prefix| svdw_hash_to_curve(curve_id, domain_prefix, G1::SVDW_Z),
 );
 
 // Parameters in montgomery form taken from
@@ -81,34 +87,61 @@ impl group::cofactor::CofactorGroup for G1 {
 
 impl G1 {
     const SVDW_Z: Fq = Fq::ONE;
-
-    fn default_hash_to_curve_suite() -> crate::hash_to_curve::Suite<Self, sha2::Sha256, 48> {
-        crate::hash_to_curve::Suite::<G1, sha2::Sha256, 48>::new(
-            b"GRUMPKIN_XMD:SHA-256_SVDW_RO_",
-            Self::SVDW_Z,
-            crate::hash_to_curve::Method::SVDW,
-        )
-    }
 }
 
 #[cfg(test)]
-mod test {
-    use group::UncompressedEncoding;
-    use rand_core::OsRng;
+mod tests {
+    use crate::arithmetic::CurveEndo;
+    use crate::grumpkin::{Fr, G1};
+    use crate::CurveExt;
+    use ff::{Field, PrimeField, WithSmallOrderMulGroup};
+    use rand::rngs::OsRng;
 
-    use super::*;
-    use crate::serde::SerdeObject;
-    crate::curve_testing_suite!(G1);
-    crate::curve_testing_suite!(G1, "endo_consistency");
-    crate::curve_testing_suite!(G1, "endo");
-    crate::curve_testing_suite!(
-        G1,
-        "constants",
-        Fq::MODULUS,
-        G1_A,
-        G1_B,
-        G1_GENERATOR_X,
-        G1_GENERATOR_Y,
-        Fr::MODULUS
-    );
+    #[test]
+    fn test_hash_to_curve() {
+        crate::tests::curve::hash_to_curve_test::<G1>();
+    }
+
+    #[test]
+    fn test_curve() {
+        crate::tests::curve::curve_tests::<G1>();
+    }
+
+    #[test]
+    fn test_endo() {
+        let z_impl = Fr::ZETA;
+        let z_other = Fr::from_raw([
+            0xe4bd44e5607cfd48,
+            0xc28f069fbb966e3d,
+            0x5e6dd9e7e0acccb0,
+            0x30644e72e131a029,
+        ]);
+
+        assert_eq!(z_impl * z_impl + z_impl, -Fr::ONE);
+        assert_eq!(z_other * z_other + z_other, -Fr::ONE);
+
+        let g = G1::generator();
+        assert_eq!(g * Fr::ZETA, g.endo());
+
+        for _ in 0..100000 {
+            let k = Fr::random(OsRng);
+            let (k1, k1_neg, k2, k2_neg) = G1::decompose_scalar(&k);
+            if k1_neg & k2_neg {
+                assert_eq!(k, -Fr::from_u128(k1) + Fr::ZETA * Fr::from_u128(k2))
+            } else if k1_neg {
+                assert_eq!(k, -Fr::from_u128(k1) - Fr::ZETA * Fr::from_u128(k2))
+            } else if k2_neg {
+                assert_eq!(k, Fr::from_u128(k1) + Fr::ZETA * Fr::from_u128(k2))
+            } else {
+                assert_eq!(k, Fr::from_u128(k1) - Fr::ZETA * Fr::from_u128(k2))
+            }
+        }
+    }
+
+    #[test]
+    fn test_serialization() {
+        crate::tests::curve::random_serialization_test::<G1>();
+        #[cfg(feature = "derive_serde")]
+        crate::tests::curve::random_serde_test::<G1>();
+    }
 }

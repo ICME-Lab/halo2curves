@@ -54,6 +54,7 @@ macro_rules! new_curve_impl {
     (($($privacy:tt)*),
     $name:ident,
     $name_affine:ident,
+    $flags_extra_byte:expr,
     $base:ident,
     $scalar:ident,
     $generator:expr,
@@ -61,125 +62,230 @@ macro_rules! new_curve_impl {
     $constant_b:expr,
     $curve_id:literal,
     $hash_to_curve:expr,
-    $flag_config:expr,
-    standard_sign
     ) => {
 
-        paste::paste! {
-            impl $crate::serde::Compressed<$name_affine> for [<$name:upper Compressed >] {
-                const CONFIG: $crate::serde::CompressedFlagConfig = $flag_config;
-                fn sign(c: &$name_affine) -> subtle::Choice {
-                    Choice::from(c.y.to_repr()[0] as u8 & 1) & !c.is_identity()
+        macro_rules! impl_compressed {
+            () => {
+                paste::paste! {
+
+                #[allow(non_upper_case_globals)]
+                const [< $name _COMPRESSED_SIZE >]: usize = if $flags_extra_byte {$base::size() + 1} else {$base::size()};
+                #[derive(Copy, Clone, PartialEq, Eq)]
+                #[cfg_attr(feature = "derive_serde", derive(Serialize, Deserialize))]
+                pub struct [<$name Compressed >](#[cfg_attr(feature = "derive_serde", serde(with = "serde_arrays"))] [u8; [< $name _COMPRESSED_SIZE >]]);
+
+                // Compressed
+                impl std::fmt::Debug for [< $name Compressed >] {
+                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        self.0[..].fmt(f)
+                    }
                 }
-                fn resolve(x: $base, sign_set: Choice) -> CtOption<$name_affine> {
-                    $name_affine::y2(x).sqrt().map(|y| {
-                        let y = $base::conditional_select(&y, &-y, sign_set ^ Choice::from(y.to_repr()[0] as u8 & 1));
-                        $name_affine { x, y }
-                    })
+
+                impl Default for [< $name Compressed >] {
+                    fn default() -> Self {
+                        [< $name Compressed >]([0; [< $name _COMPRESSED_SIZE >]])
+                    }
                 }
-            }
+
+                impl AsRef<[u8]> for [< $name Compressed >] {
+                    fn as_ref(&self) -> &[u8] {
+                        &self.0
+                    }
+                }
+
+                impl AsMut<[u8]> for [< $name Compressed >] {
+                    fn as_mut(&mut self) -> &mut [u8] {
+                        &mut self.0
+                    }
+                }
+
+                impl group::GroupEncoding for $name_affine {
+                    type Repr = [< $name Compressed >];
+
+
+                    fn from_bytes(bytes: &Self::Repr) -> CtOption<Self> {
+                        let bytes = &bytes.0;
+                        let mut tmp = *bytes;
+                        let is_inf = Choice::from(tmp[[< $name _COMPRESSED_SIZE >] - 1] >> 7);
+                        let ysign = Choice::from((tmp[[< $name _COMPRESSED_SIZE >] - 1] >> 6) & 1);
+                        tmp[[< $name _COMPRESSED_SIZE >] - 1] &= 0b0011_1111;
+                        let mut xbytes = [0u8; $base::size()];
+                        xbytes.copy_from_slice(&tmp[ ..$base::size()]);
+
+                        $base::from_bytes(&xbytes).and_then(|x| {
+                            CtOption::new(Self::identity(), x.is_zero() & (is_inf)).or_else(|| {
+                                $name_affine::y2(x).sqrt().and_then(|y| {
+                                    let sign = Choice::from(y.to_bytes()[0] & 1);
+
+                                    let y = $base::conditional_select(&y, &-y, ysign ^ sign);
+
+                                    CtOption::new(
+                                        $name_affine {
+                                            x,
+                                            y,
+                                        },
+                                        Choice::from(1u8),
+                                    )
+                                })
+                            })
+                        })
+                    }
+
+                    fn from_bytes_unchecked(bytes: &Self::Repr) -> CtOption<Self> {
+                        Self::from_bytes(bytes)
+                    }
+
+                    fn to_bytes(&self) -> Self::Repr {
+                        if bool::from(self.is_identity()) {
+                            let mut bytes = [0; [< $name _COMPRESSED_SIZE >]];
+                            bytes[[< $name _COMPRESSED_SIZE >] - 1] |= 0b1000_0000;
+                            [< $name Compressed >](bytes)
+                        } else {
+                            let (x, y) = (self.x, self.y);
+                            let sign = (y.to_bytes()[0] & 1) << 6;
+                            let mut xbytes = [0u8; [< $name _COMPRESSED_SIZE >]];
+                            xbytes[..$base::size()].copy_from_slice(&x.to_bytes());
+                            xbytes[[< $name _COMPRESSED_SIZE >] - 1] |= sign;
+                            [< $name Compressed >](xbytes)
+                        }
+                    }
+                }
+
+                impl GroupEncoding for $name {
+                    type Repr = [< $name Compressed >];
+
+                    fn from_bytes(bytes: &Self::Repr) -> CtOption<Self> {
+                        $name_affine::from_bytes(bytes).map(Self::from)
+                    }
+
+                    fn from_bytes_unchecked(bytes: &Self::Repr) -> CtOption<Self> {
+                        $name_affine::from_bytes(bytes).map(Self::from)
+                    }
+
+                    fn to_bytes(&self) -> Self::Repr {
+                        $name_affine::from(self).to_bytes()
+                    }
+                }
+
+                }
+            };
         }
 
+        macro_rules! impl_uncompressed {
+            () => {
 
-        new_curve_impl!(($($privacy)*), $name, $name_affine, $base, $scalar, $generator, $constant_a, $constant_b, $curve_id, $hash_to_curve, $flag_config);
-    };
+                paste::paste! {
 
-    (($($privacy:tt)*),
-    $name:ident,
-    $name_affine:ident,
-    $base:ident,
-    $scalar:ident,
-    $generator:expr,
-    $constant_a:expr,
-    $constant_b:expr,
-    $curve_id:literal,
-    $hash_to_curve:expr,
-    $flag_config:expr
-    ) => {
+                #[allow(non_upper_case_globals)]
+                const [< $name _UNCOMPRESSED_SIZE >]: usize = if $flags_extra_byte {
+                    2 * $base::size() + 1
+                } else{
+                    2 *$base::size()
+                };
+                #[derive(Copy, Clone)]
+                pub struct [< $name Uncompressed >]([u8; [< $name _UNCOMPRESSED_SIZE >]]);
+                    impl std::fmt::Debug for [< $name Uncompressed >] {
+                        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                            self.0[..].fmt(f)
+                        }
+                    }
 
+                    impl Default for [< $name Uncompressed >] {
+                        fn default() -> Self {
+                            [< $name Uncompressed >]([0; [< $name _UNCOMPRESSED_SIZE >] ])
+                        }
+                    }
 
-        paste::paste! {
-            const [< $name:upper _COMPRESSED_SIZE >]: usize = $base::SIZE + if $flag_config.has_extra_byte() { 1 } else { 0 };
+                    impl AsRef<[u8]> for [< $name Uncompressed >] {
+                        fn as_ref(&self) -> &[u8] {
+                            &self.0
+                        }
+                    }
 
-            pub type [<$name:upper Compressed >] = $crate::serde::Repr<[< $name:upper _COMPRESSED_SIZE >]>;
-            pub type [<$name Uncompressed >] = $crate::serde::Repr<{ 2*$base::SIZE }>;
+                    impl AsMut<[u8]> for [< $name Uncompressed >] {
+                        fn as_mut(&mut self) -> &mut [u8] {
+                            &mut self.0
+                        }
+                    }
 
-            impl GroupEncoding for $name_affine {
-                type Repr = [<$name:upper Compressed >];
+                    impl ConstantTimeEq for [< $name Uncompressed >] {
+                        fn ct_eq(&self, other: &Self) -> Choice {
+                            self.0.ct_eq(&other.0)
+                        }
+                    }
 
-                fn from_bytes(bytes: &Self::Repr) -> CtOption<Self> {
-                    <Self::Repr as $crate::serde::Compressed<$name_affine>>::decode(bytes.clone())
+                    impl Eq for [< $name Uncompressed >] {}
+
+                    impl PartialEq for [< $name Uncompressed >] {
+                        #[inline]
+                        fn eq(&self, other: &Self) -> bool {
+                            bool::from(self.ct_eq(other))
+                        }
+                    }
+
+                    impl group::UncompressedEncoding for $name_affine{
+                        type Uncompressed = [< $name Uncompressed >];
+
+                        fn from_uncompressed(bytes: &Self::Uncompressed) -> CtOption<Self> {
+                            Self::from_uncompressed_unchecked(bytes).and_then(|p| CtOption::new(p, p.is_on_curve()))
+                        }
+
+                        fn from_uncompressed_unchecked(bytes: &Self::Uncompressed) -> CtOption<Self> {
+                            let bytes = &bytes.0;
+                            let infinity_flag_set = Choice::from((bytes[[< $name _UNCOMPRESSED_SIZE >] - 1] >> 6) & 1);
+                            // Attempt to obtain the x-coordinate
+                            let x = {
+                                let mut tmp = [0; $base::size()];
+                                tmp.copy_from_slice(&bytes[0..$base::size()]);
+                                $base::from_bytes(&tmp)
+                            };
+
+                            // Attempt to obtain the y-coordinate
+                            let y = {
+                                let mut tmp = [0; $base::size()];
+                                tmp.copy_from_slice(&bytes[$base::size()..2*$base::size()]);
+                                $base::from_bytes(&tmp)
+                            };
+
+                            x.and_then(|x| {
+                                y.and_then(|y| {
+                                    // Create a point representing this value
+                                    let p = $name_affine::conditional_select(
+                                        &$name_affine{
+                                            x,
+                                            y,
+                                        },
+                                        &$name_affine::identity(),
+                                        infinity_flag_set,
+                                    );
+
+                                    CtOption::new(
+                                        p,
+                                        // If the infinity flag is set, the x and y coordinates should have been zero.
+                                        ((!infinity_flag_set) | (x.is_zero() & y.is_zero()))
+                                    )
+                                })
+                            })
+                        }
+
+                        fn to_uncompressed(&self) -> Self::Uncompressed {
+                            let mut res = [0; [< $name _UNCOMPRESSED_SIZE >]];
+
+                            res[0..$base::size()].copy_from_slice(
+                                &$base::conditional_select(&self.x, &$base::zero(), self.is_identity()).to_bytes()[..],
+                            );
+                            res[$base::size().. 2*$base::size()].copy_from_slice(
+                                &$base::conditional_select(&self.y, &$base::zero(), self.is_identity()).to_bytes()[..],
+                            );
+
+                            res[[< $name _UNCOMPRESSED_SIZE >] - 1] |= u8::conditional_select(&0u8, &(1u8 << 6), self.is_identity());
+
+                            [< $name Uncompressed >](res)
+                        }
+                    }
                 }
+            };
 
-                fn from_bytes_unchecked(bytes: &Self::Repr) -> CtOption<Self> {
-                    <Self::Repr as $crate::serde::Compressed<$name_affine>>::decode(bytes.clone())
-                }
-
-                fn to_bytes(&self) -> Self::Repr {
-                    <Self::Repr as $crate::serde::Compressed<$name_affine>>::encode(&self)
-                }
-            }
-
-            impl GroupEncoding for $name {
-                type Repr = [<$name:upper Compressed >];
-
-                fn from_bytes(bytes: &Self::Repr) -> CtOption<Self> {
-                    <Self::Repr as $crate::serde::Compressed<$name_affine>>::decode(bytes.clone()).map(Self::from)
-                }
-
-                fn from_bytes_unchecked(bytes: &Self::Repr) -> CtOption<Self> {
-                    <Self::Repr as $crate::serde::Compressed<$name_affine>>::decode(bytes.clone()).map(Self::from)
-                }
-
-                fn to_bytes(&self) -> Self::Repr {
-                    <Self::Repr as $crate::serde::Compressed<$name_affine>>::encode(&self.to_affine())
-                }
-            }
-
-            impl group::UncompressedEncoding for $name_affine {
-                type Uncompressed = [<$name Uncompressed >];
-
-                fn from_uncompressed(bytes: &Self::Uncompressed) -> CtOption<Self> {
-                    Self::from_uncompressed_unchecked(bytes).and_then(|p| CtOption::new(p, p.is_on_curve()))
-                }
-
-                fn from_uncompressed_unchecked(bytes: &Self::Uncompressed) -> CtOption<Self> {
-                    let mut repr = [0u8; $base::SIZE];
-
-                    let x = {
-                        repr.copy_from_slice(&bytes[0..$base::SIZE]);
-                        $base::from_bytes(&repr)
-                    };
-
-                    let y = {
-                        repr.copy_from_slice(&bytes[$base::SIZE..2*$base::SIZE]);
-                        $base::from_bytes(&repr)
-                    };
-
-                    x.and_then(|x| {
-                        y.and_then(|y| {
-                            let is_identity = x.is_zero() & y.is_zero();
-                            let unchecked = Self { x, y };
-                            subtle::CtOption::new($name_affine::identity(), is_identity)
-                                .or_else(|| subtle::CtOption::new(unchecked, Choice::from(1u8)))
-                        })
-                    })
-                }
-
-                fn to_uncompressed(&self) -> Self::Uncompressed {
-                    let mut res = Self::Uncompressed::default();
-
-                    res[0..$base::SIZE].copy_from_slice(
-                        &$base::conditional_select(&self.x, &$base::zero(), self.is_identity()).to_bytes()[..],
-                    );
-
-                    res[$base::SIZE.. 2*$base::SIZE].copy_from_slice(
-                        &$base::conditional_select(&self.y, &$base::zero(), self.is_identity()).to_bytes()[..],
-                    );
-
-                    res
-                }
-            }
         }
 
         /// A macro to help define point serialization using the [`group::GroupEncoding`] trait
@@ -191,9 +297,9 @@ macro_rules! new_curve_impl {
                     fn serialize<S: ::serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
                         let bytes = &self.to_bytes();
                         if serializer.is_human_readable() {
-                            ::hex::serde::serialize(&bytes, serializer)
+                            ::hex::serde::serialize(&bytes.0, serializer)
                         } else {
-                            ::serde_arrays::serialize(bytes.inner(), serializer)
+                            ::serde_arrays::serialize(&bytes.0, serializer)
                         }
                     }
                 }
@@ -207,9 +313,9 @@ macro_rules! new_curve_impl {
                             let bytes = if deserializer.is_human_readable() {
                                 ::hex::serde::deserialize(deserializer)?
                             } else {
-                                ::serde_arrays::deserialize::<_, u8, [< $name:upper _COMPRESSED_SIZE >]>(deserializer)?
+                                ::serde_arrays::deserialize::<_, u8, [< $name _COMPRESSED_SIZE >]>(deserializer)?
                             };
-                            Option::from(Self::from_bytes(&bytes.into())).ok_or_else(|| {
+                            Option::from(Self::from_bytes(&[< $name Compressed >](bytes))).ok_or_else(|| {
                                 D::Error::custom("deserialized bytes don't encode a valid field element")
                             })
                         }
@@ -220,9 +326,9 @@ macro_rules! new_curve_impl {
                     fn serialize<S: ::serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
                         let bytes = &self.to_bytes();
                         if serializer.is_human_readable() {
-                            ::hex::serde::serialize(&bytes, serializer)
+                            ::hex::serde::serialize(&bytes.0, serializer)
                         } else {
-                            ::serde_arrays::serialize(bytes.inner(), serializer)
+                            ::serde_arrays::serialize(&bytes.0, serializer)
                         }
                     }
                 }
@@ -236,9 +342,9 @@ macro_rules! new_curve_impl {
                             let bytes = if deserializer.is_human_readable() {
                                 ::hex::serde::deserialize(deserializer)?
                             } else {
-                                ::serde_arrays::deserialize::<_, u8, [< $name:upper _COMPRESSED_SIZE >]>(deserializer)?
+                                ::serde_arrays::deserialize::<_, u8, [< $name _COMPRESSED_SIZE >]>(deserializer)?
                             };
-                            Option::from(Self::from_bytes(&bytes.into())).ok_or_else(|| {
+                            Option::from(Self::from_bytes(&[< $name Compressed >](bytes))).ok_or_else(|| {
                                 D::Error::custom("deserialized bytes don't encode a valid field element")
                             })
                         }
@@ -262,6 +368,9 @@ macro_rules! new_curve_impl {
 
         #[cfg(feature = "derive_serde")]
         serialize_deserialize_to_from_bytes!();
+
+        impl_compressed!();
+        impl_uncompressed!();
 
 
 
@@ -318,7 +427,7 @@ macro_rules! new_curve_impl {
 
                     let y2 = $name_affine::y2(x);
                     if let Some(y) = Option::<$base>::from(y2.sqrt()) {
-                        let sign = y.to_repr()[0] & 1;
+                        let sign = y.to_bytes()[0] & 1;
                         let y = if ysign ^ sign == 0 { y } else { -y };
 
                         let p = $name_affine {
@@ -414,7 +523,7 @@ macro_rules! new_curve_impl {
             }
 
             fn jacobian_coordinates(&self) -> ($base, $base, $base) {
-                // Homogeneous to Jacobian
+                // Homogenous to Jacobian
                 let x = self.x * self.z;
                 let y = self.y * self.z.square();
                 (x, y, self.z)
@@ -423,7 +532,7 @@ macro_rules! new_curve_impl {
 
             #[allow(clippy::redundant_closure_call)]
             fn hash_to_curve<'a>(domain_prefix: &'a str) -> Box<dyn Fn(&[u8]) -> Self + 'a> {
-                $hash_to_curve(domain_prefix)
+                $hash_to_curve($curve_id, domain_prefix)
             }
 
             fn is_on_curve(&self) -> Choice {
@@ -454,7 +563,7 @@ macro_rules! new_curve_impl {
             }
 
             fn new_jacobian(x: Self::Base, y: Self::Base, z: Self::Base) -> CtOption<Self> {
-                // Jacobian to homogeneous
+                // Jacobian to homogenous
                 let z_inv = z.invert().unwrap_or($base::zero());
                 let p_x = x * z_inv;
                 let p_y = y * z_inv.square();
@@ -615,17 +724,17 @@ macro_rules! new_curve_impl {
 
         impl $crate::serde::SerdeObject for $name {
             fn from_raw_bytes_unchecked(bytes: &[u8]) -> Self {
-                debug_assert_eq!(bytes.len(), 3 * $base::SIZE);
+                debug_assert_eq!(bytes.len(), 3 * $base::size());
                 let [x, y, z] = [0, 1, 2]
-                    .map(|i| $base::from_raw_bytes_unchecked(&bytes[i * $base::SIZE..(i + 1) * $base::SIZE]));
+                    .map(|i| $base::from_raw_bytes_unchecked(&bytes[i * $base::size()..(i + 1) * $base::size()]));
                 Self { x, y, z }
             }
             fn from_raw_bytes(bytes: &[u8]) -> Option<Self> {
-                if bytes.len() != 3 * $base::SIZE {
+                if bytes.len() != 3 * $base::size() {
                     return None;
                 }
                 let [x, y, z] =
-                    [0, 1, 2].map(|i| $base::from_raw_bytes(&bytes[i * $base::SIZE..(i + 1) * $base::SIZE]));
+                    [0, 1, 2].map(|i| $base::from_raw_bytes(&bytes[i * $base::size()..(i + 1) * $base::size()]));
                 x.zip(y).zip(z).and_then(|((x, y), z)| {
                     let res = Self { x, y, z };
                     // Check that the point is on the curve.
@@ -633,7 +742,7 @@ macro_rules! new_curve_impl {
                 })
             }
             fn to_raw_bytes(&self) -> Vec<u8> {
-                let mut res = Vec::with_capacity(3 * $base::SIZE);
+                let mut res = Vec::with_capacity(3 * $base::size());
                 Self::write_raw(self, &mut res).unwrap();
                 res
             }
@@ -717,16 +826,16 @@ macro_rules! new_curve_impl {
 
         impl $crate::serde::SerdeObject for $name_affine {
             fn from_raw_bytes_unchecked(bytes: &[u8]) -> Self {
-                debug_assert_eq!(bytes.len(), 2 * $base::SIZE);
+                debug_assert_eq!(bytes.len(), 2 * $base::size());
                 let [x, y] =
-                    [0, $base::SIZE].map(|i| $base::from_raw_bytes_unchecked(&bytes[i..i + $base::SIZE]));
+                    [0, $base::size()].map(|i| $base::from_raw_bytes_unchecked(&bytes[i..i + $base::size()]));
                 Self { x, y }
             }
             fn from_raw_bytes(bytes: &[u8]) -> Option<Self> {
-                if bytes.len() != 2 * $base::SIZE {
+                if bytes.len() != 2 * $base::size() {
                     return None;
                 }
-                let [x, y] = [0, $base::SIZE].map(|i| $base::from_raw_bytes(&bytes[i..i + $base::SIZE]));
+                let [x, y] = [0, $base::size()].map(|i| $base::from_raw_bytes(&bytes[i..i + $base::size()]));
                 x.zip(y).and_then(|(x, y)| {
                     let res = Self { x, y };
                     // Check that the point is on the curve.
@@ -734,7 +843,7 @@ macro_rules! new_curve_impl {
                 })
             }
             fn to_raw_bytes(&self) -> Vec<u8> {
-                let mut res = Vec::with_capacity(2 * $base::SIZE);
+                let mut res = Vec::with_capacity(2 * $base::size());
                 Self::write_raw(self, &mut res).unwrap();
                 res
             }
@@ -1097,7 +1206,6 @@ macro_rules! new_curve_impl {
                 let mut acc = $name::identity();
                 for bit in other
                     .to_repr()
-                    .as_ref()
                     .iter()
                     .rev()
                     .flat_map(|byte| (0..8).rev().map(move |i| Choice::from((byte >> i) & 1u8)))
@@ -1174,7 +1282,6 @@ macro_rules! new_curve_impl {
 
                 for bit in other
                     .to_repr()
-                    .as_ref()
                     .iter()
                     .rev()
                     .flat_map(|byte| (0..8).rev().map(move |i| Choice::from((byte >> i) & 1u8)))

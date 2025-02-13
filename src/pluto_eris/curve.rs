@@ -1,20 +1,24 @@
-use core::{
-    cmp,
-    fmt::Debug,
-    iter::Sum,
-    ops::{Add, Mul, Neg, Sub},
-};
-
+use super::fields::{fp::Fp, fp2::Fp2, fq::Fq};
+use crate::ff::WithSmallOrderMulGroup;
+use crate::ff::{Field, PrimeField};
+use crate::group::{prime::PrimeCurveAffine, Curve, Group as _, GroupEncoding};
+use crate::hash_to_curve::svdw_hash_to_curve;
+use crate::{Coordinates, CurveAffine, CurveExt};
+use core::cmp;
+use core::fmt::Debug;
+use core::iter::Sum;
+use core::ops::{Add, Mul, Neg, Sub};
 use group::cofactor::CofactorGroup;
 use rand::RngCore;
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
-use super::{fp::Fp, fp2::Fp2, fq::Fq};
+#[cfg(feature = "derive_serde")]
+use serde::{Deserialize, Serialize};
+
 use crate::{
-    ff::{Field, PrimeField, WithSmallOrderMulGroup},
-    group::{prime::PrimeCurveAffine, Curve, Group as _, GroupEncoding},
-    impl_binops_additive, impl_binops_additive_specify_output, impl_binops_multiplicative,
-    impl_binops_multiplicative_mixed, new_curve_impl, Coordinates, CurveAffine, CurveExt,
+    impl_add_binop_specify_output, impl_binops_additive, impl_binops_additive_specify_output,
+    impl_binops_multiplicative, impl_binops_multiplicative_mixed, impl_sub_binop_specify_output,
+    new_curve_impl,
 };
 
 const G1_GENERATOR_X: Fp = Fp::from_raw([
@@ -120,15 +124,14 @@ new_curve_impl!(
     (pub),
     G1,
     G1Affine,
+    false,
     Fp,
     Fq,
     (G1_GENERATOR_X,G1_GENERATOR_Y),
     PLUTO_A,
     PLUTO_B,
     "pluto",
-    |domain_prefix| crate::hash_to_curve::hash_to_curve(domain_prefix, G1::default_hash_to_curve_suite()),
-    crate::serde::CompressedFlagConfig::TwoSpare,
-    standard_sign
+    |curve_id, domain_prefix| svdw_hash_to_curve(curve_id, domain_prefix, G1::SVDW_Z),
 );
 
 impl group::cofactor::CofactorGroup for Eris {
@@ -151,29 +154,20 @@ impl G1 {
     /// Constant Z for the Shallue-van de Woestijne map.
     /// Computed using https://www.ietf.org/archive/id/draft-irtf-cfrg-hash-to-curve-10.html#svdw-z-code
     const SVDW_Z: Fp = Fp::ONE;
-
-    fn default_hash_to_curve_suite() -> crate::hash_to_curve::Suite<Self, sha2::Sha256, 72> {
-        crate::hash_to_curve::Suite::<Self, sha2::Sha256, 72>::new(
-            b"pluto_XMD:SHA-256_SVDW_RO_",
-            Self::SVDW_Z,
-            crate::hash_to_curve::Method::SVDW,
-        )
-    }
 }
 
 new_curve_impl!(
     (pub),
     Eris,
     ErisAffine,
+    false,
     Fq,
     Fp,
     (ERIS_GENERATOR_X,ERIS_GENERATOR_Y),
     ERIS_A,
     ERIS_B,
     "eris",
-    |domain_prefix| crate::hash_to_curve::hash_to_curve(domain_prefix, Eris::default_hash_to_curve_suite()),
-    crate::serde::CompressedFlagConfig::TwoSpare,
-    standard_sign
+    |curve_id, domain_prefix| svdw_hash_to_curve(curve_id, domain_prefix, Eris::SVDW_Z),
 );
 
 impl CofactorGroup for G2 {
@@ -203,17 +197,16 @@ impl CofactorGroup for G2 {
     }
 
     fn into_subgroup(self) -> CtOption<Self::Subgroup> {
-        // TODO: Handle the case where the point is already in the subgroup.
         CtOption::new(self.clear_cofactor(), 1.into())
     }
 
     fn is_torsion_free(&self) -> Choice {
-        // group order = q
+        // group order = p
         let e: [u8; 56] = [
             0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x24, 0x00, 0x01, 0x30, 0xe0, 0x00, 0x0d, 0x7f,
             0x70, 0xe4, 0xa8, 0x03, 0xca, 0x76, 0xf4, 0x39, 0x26, 0x6f, 0x44, 0x3f, 0x9a, 0x5c,
-            0x7a, 0x8a, 0x6c, 0x7b, 0xe4, 0xa7, 0x75, 0xfe, 0x8e, 0x17, 0x7f, 0xd6, 0x9c, 0xa7,
-            0xe8, 0x5d, 0x60, 0x05, 0x0a, 0xf4, 0x1f, 0xff, 0xfc, 0xd3, 0x00, 0x00, 0x00, 0x01,
+            0xda, 0x8a, 0x6c, 0x7b, 0xe4, 0xa7, 0xa5, 0xfe, 0x8f, 0xad, 0xff, 0xd6, 0xa2, 0xa7,
+            0xe8, 0xc3, 0x00, 0x06, 0xb9, 0x45, 0x9f, 0xff, 0xfc, 0xd3, 0x00, 0x00, 0x00, 0x01,
         ];
         // self * GROUP_ORDER;
         let mut acc = G2::identity();
@@ -233,83 +226,62 @@ impl Eris {
     /// Constant Z for the Shallue-van de Woestijne map.
     /// Computed using https://www.ietf.org/archive/id/draft-irtf-cfrg-hash-to-curve-10.html#svdw-z-code
     const SVDW_Z: Fq = Fq::ONE;
-
-    fn default_hash_to_curve_suite() -> crate::hash_to_curve::Suite<Self, sha2::Sha256, 72> {
-        crate::hash_to_curve::Suite::<Eris, sha2::Sha256, 72>::new(
-            b"eris_XMD:SHA-256_SVDW_RO_",
-            Self::SVDW_Z,
-            crate::hash_to_curve::Method::SVDW,
-        )
-    }
-}
-
-impl crate::serde::endian::EndianRepr for Fp2 {
-    const ENDIAN: crate::serde::endian::Endian = Fq::ENDIAN;
-
-    fn to_bytes(&self) -> Vec<u8> {
-        self.to_bytes().to_vec()
-    }
-
-    fn from_bytes(bytes: &[u8]) -> subtle::CtOption<Self> {
-        Fp2::from_bytes(bytes[..Fp2::SIZE].try_into().unwrap())
-    }
 }
 
 new_curve_impl!(
     (pub),
     G2,
     G2Affine,
+    false,
     Fp2,
     Fq,
     (G2_GENERATOR_X,G2_GENERATOR_Y),
     TRITON_A,
     TRITON_B,
     "triton",
-    |_| unimplemented!(),
-    crate::serde::CompressedFlagConfig::TwoSpare,
-    standard_sign
+    |_, _| unimplemented!(),
 );
 
-#[cfg(test)]
-mod test {
-    use group::UncompressedEncoding;
-    use rand_core::OsRng;
+#[test]
+fn test_curve_pluto() {
+    crate::tests::curve::curve_tests::<G1>();
+}
+#[test]
+fn test_curve_eris() {
+    crate::tests::curve::curve_tests::<Eris>();
+}
+#[test]
+fn test_curve_triton() {
+    crate::tests::curve::curve_tests::<G2>();
+}
 
-    use super::*;
-    use crate::serde::SerdeObject;
+#[test]
+fn test_serialization() {
+    crate::tests::curve::random_serialization_test::<G1>();
+    crate::tests::curve::random_serialization_test::<Eris>();
+    crate::tests::curve::random_serialization_test::<G2>();
+    #[cfg(feature = "derive_serde")]
+    crate::tests::curve::random_serde_test::<G1>();
+    #[cfg(feature = "derive_serde")]
+    crate::tests::curve::random_serde_test::<Eris>();
+    #[cfg(feature = "derive_serde")]
+    crate::tests::curve::random_serde_test::<G2>();
+}
 
-    crate::curve_testing_suite!(G2, "clear_cofactor");
-    crate::curve_testing_suite!(G1, Eris, G2);
-    crate::curve_testing_suite!(G1, Eris, "hash_to_curve");
-    crate::curve_testing_suite!(G1, Eris, "endo_consistency");
-    crate::curve_testing_suite!(
-        G1,
-        "constants",
-        Fp::MODULUS,
-        PLUTO_A,
-        PLUTO_B,
-        G1_GENERATOR_X,
-        G1_GENERATOR_Y,
-        Fq::MODULUS
-    );
-    crate::curve_testing_suite!(
-        Eris,
-        "constants",
-        Fq::MODULUS,
-        ERIS_A,
-        ERIS_B,
-        ERIS_GENERATOR_X,
-        ERIS_GENERATOR_Y,
-        Fp::MODULUS
-    );
-    crate::curve_testing_suite!(
-        G2,
-        "constants",
-        Fp2::MODULUS,
-        TRITON_A,
-        TRITON_B,
-        G2_GENERATOR_X,
-        G2_GENERATOR_Y,
-        Fq::MODULUS
-    );
+#[test]
+fn test_hash_to_curve() {
+    crate::tests::curve::hash_to_curve_test::<G1>();
+    crate::tests::curve::hash_to_curve_test::<Eris>();
+}
+
+#[test]
+fn test_endo_consistency() {
+    let g = Eris::generator();
+    assert_eq!(g * Fp::ZETA, g.endo());
+
+    let g = G1::generator();
+    assert_eq!(g * Fq::ZETA, g.endo());
+
+    let g = G2::generator();
+    assert_eq!(g * Fq::ZETA, g.endo());
 }

@@ -1,21 +1,24 @@
-use core::{
-    cmp,
-    fmt::Debug,
-    iter::Sum,
-    ops::{Add, Mul, Neg, Sub},
+use crate::ff::WithSmallOrderMulGroup;
+use crate::ff::{Field, PrimeField};
+use crate::group::Curve;
+use crate::group::{prime::PrimeCurveAffine, Group, GroupEncoding};
+use crate::hash_to_curve::svdw_hash_to_curve;
+use crate::secp256k1::{Fp, Fq};
+use crate::{
+    impl_add_binop_specify_output, impl_binops_additive, impl_binops_additive_specify_output,
+    impl_binops_multiplicative, impl_binops_multiplicative_mixed, impl_sub_binop_specify_output,
+    new_curve_impl,
 };
-
+use crate::{Coordinates, CurveAffine, CurveExt};
+use core::cmp;
+use core::fmt::Debug;
+use core::iter::Sum;
+use core::ops::{Add, Mul, Neg, Sub};
 use rand::RngCore;
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
-use crate::{
-    ff::{Field, PrimeField, WithSmallOrderMulGroup},
-    group::{prime::PrimeCurveAffine, Curve, Group, GroupEncoding},
-    impl_binops_additive, impl_binops_additive_specify_output, impl_binops_multiplicative,
-    impl_binops_multiplicative_mixed, new_curve_impl,
-    secp256k1::{Fp, Fq},
-    Coordinates, CurveAffine, CurveExt,
-};
+#[cfg(feature = "derive_serde")]
+use serde::{Deserialize, Serialize};
 
 const SECQ_GENERATOR_X: Fq = Fq::from_raw([
     0xA24288E37702EDA6,
@@ -38,15 +41,14 @@ new_curve_impl!(
     (pub),
     Secq256k1,
     Secq256k1Affine,
+    true,
     Fq,
     Fp,
     (SECQ_GENERATOR_X, SECQ_GENERATOR_Y),
     SECQ_A,
     SECQ_B,
     "secq256k1",
-    |domain_prefix| crate::hash_to_curve::hash_to_curve(domain_prefix, Secq256k1::default_hash_to_curve_suite()),
-    crate::serde::CompressedFlagConfig::Extra,
-    standard_sign
+    |curve_id, domain_prefix| svdw_hash_to_curve(curve_id, domain_prefix, Secq256k1::SVDW_Z),
 );
 
 impl group::cofactor::CofactorGroup for Secq256k1 {
@@ -67,34 +69,36 @@ impl group::cofactor::CofactorGroup for Secq256k1 {
 
 impl Secq256k1 {
     const SVDW_Z: Fq = Fq::ONE;
-
-    fn default_hash_to_curve_suite() -> crate::hash_to_curve::Suite<Self, sha2::Sha256, 48> {
-        crate::hash_to_curve::Suite::<Self, sha2::Sha256, 48>::new(
-            b"secq256k1_XMD:SHA-256_SVDW_RO_",
-            Self::SVDW_Z,
-            crate::hash_to_curve::Method::SVDW,
-        )
-    }
 }
 
 #[cfg(test)]
-mod test {
-    use group::UncompressedEncoding;
-    use rand_core::OsRng;
+mod tests {
+    use crate::secq256k1::Fq;
+    use crate::CurveExt;
+    use ff::WithSmallOrderMulGroup;
 
-    use super::*;
-    use crate::serde::SerdeObject;
+    use super::Secq256k1;
 
-    crate::curve_testing_suite!(Secq256k1);
-    crate::curve_testing_suite!(Secq256k1, "endo_consistency");
-    crate::curve_testing_suite!(
-        Secq256k1,
-        "constants",
-        Fq::MODULUS,
-        SECQ_A,
-        SECQ_B,
-        SECQ_GENERATOR_X,
-        SECQ_GENERATOR_Y,
-        Fp::MODULUS
-    );
+    #[test]
+    fn test_hash_to_curve() {
+        crate::tests::curve::hash_to_curve_test::<Secq256k1>();
+    }
+
+    #[test]
+    fn test_curve() {
+        crate::tests::curve::curve_tests::<Secq256k1>();
+    }
+
+    #[test]
+    fn test_endo_consistency() {
+        let g = Secq256k1::generator();
+        assert_eq!(g * Fq::ZETA, g.endo());
+    }
+
+    #[test]
+    fn test_serialization() {
+        crate::tests::curve::random_serialization_test::<Secq256k1>();
+        #[cfg(feature = "derive_serde")]
+        crate::tests::curve::random_serde_test::<Secq256k1>();
+    }
 }

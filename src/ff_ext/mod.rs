@@ -1,7 +1,5 @@
-pub mod cubic;
 pub mod inverse;
 pub mod jacobi;
-pub mod quadratic;
 use subtle::{Choice, ConstantTimeEq};
 
 pub trait Legendre {
@@ -31,13 +29,4 @@ macro_rules! extend_field_legendre {
             }
         }
     };
-}
-
-pub trait ExtField: ff::Field {
-    const NON_RESIDUE: Self;
-    #[must_use]
-    fn mul_by_nonresidue(&self) -> Self {
-        Self::NON_RESIDUE * self
-    }
-    fn frobenius_map(&mut self, power: usize);
 }

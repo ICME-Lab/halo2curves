@@ -1,21 +1,25 @@
-use core::{
-    cmp,
-    fmt::Debug,
-    iter::Sum,
-    ops::{Add, Mul, Neg, Sub},
-};
-
+use crate::ff::WithSmallOrderMulGroup;
+use crate::ff::{Field, PrimeField};
+use crate::group::{prime::PrimeCurveAffine, Curve, Group as _, GroupEncoding};
+use crate::hash_to_curve::{sswu_hash_to_curve, sswu_hash_to_curve_secp256k1};
+use crate::secp256k1::Fp;
+use crate::secp256k1::Fq;
+use crate::{Coordinates, CurveAffine, CurveExt};
+use core::cmp;
+use core::fmt::Debug;
+use core::iter::Sum;
+use core::ops::{Add, Mul, Neg, Sub};
 use rand::RngCore;
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
 use crate::{
-    ff::{Field, PrimeField, WithSmallOrderMulGroup},
-    group::{prime::PrimeCurveAffine, Curve, Group as _, GroupEncoding},
-    impl_binops_additive, impl_binops_additive_specify_output, impl_binops_multiplicative,
-    impl_binops_multiplicative_mixed, new_curve_impl,
-    secp256k1::{Fp, Fq},
-    Coordinates, CurveAffine, CurveExt,
+    impl_add_binop_specify_output, impl_binops_additive, impl_binops_additive_specify_output,
+    impl_binops_multiplicative, impl_binops_multiplicative_mixed, impl_sub_binop_specify_output,
+    new_curve_impl,
 };
+
+#[cfg(feature = "derive_serde")]
+use serde::{Deserialize, Serialize};
 
 impl group::cofactor::CofactorGroup for Secp256k1 {
     type Subgroup = Secp256k1;
@@ -54,60 +58,100 @@ new_curve_impl!(
     (pub),
     Secp256k1,
     Secp256k1Affine,
+    true,
     Fp,
     Fq,
     (SECP_GENERATOR_X,SECP_GENERATOR_Y),
     SECP_A,
     SECP_B,
     "secp256k1",
-    |domain_prefix| hash_to_curve(domain_prefix, hash_to_curve_suite(b"secp256k1_XMD:SHA-256_SSWU_RO_")),
-    crate::serde::CompressedFlagConfig::Extra,
-    standard_sign
+    |curve_id, domain_prefix| sswu_hash_to_curve_secp256k1(curve_id, domain_prefix),
 );
 
-fn hash_to_curve_suite(domain: &[u8]) -> crate::hash_to_curve::Suite<Secp256k1, sha2::Sha256, 48> {
+impl Secp256k1 {
     // Z = -11 (reference: <https://www.rfc-editor.org/rfc/rfc9380.html#name-suites-for-secp256k1>)
     // 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc24
+    #[allow(dead_code)]
     const SSWU_Z: Fp = Fp::from_raw([
         0xfffffffefffffc24,
         0xffffffffffffffff,
         0xffffffffffffffff,
         0xffffffffffffffff,
     ]);
-
-    // E': y'^2 = x'^3 + A' * x' + B', where
-    // A': 0x3f8731abdd661adca08a5558f0f5d272e953d363cb6f0e5d405447c01a444533
-    // B': 1771
-    // (reference: <https://www.rfc-editor.org/rfc/rfc9380.html#name-suites-for-secp256k1>)
-    pub const ISO_SECP_A: Fp = Fp::from_raw([
-        0x405447c01a444533,
-        0xe953d363cb6f0e5d,
-        0xa08a5558f0f5d272,
-        0x3f8731abdd661adc,
-    ]);
-
-    pub const ISO_SECP_B: Fp = Fp::from_raw([1771, 0, 0, 0]);
-
-    let iso_map = crate::hash_to_curve::Iso {
-        a: ISO_SECP_A,
-        b: ISO_SECP_B,
-        map: Box::new(iso_map),
-    };
-
-    crate::hash_to_curve::Suite::new(domain, SSWU_Z, crate::hash_to_curve::Method::SSWU(iso_map))
 }
 
-#[allow(clippy::type_complexity)]
-pub(crate) fn hash_to_curve<'a>(
-    domain_prefix: &'a str,
-    suite: crate::hash_to_curve::Suite<Secp256k1, sha2::Sha256, 48>,
-) -> Box<dyn Fn(&[u8]) -> Secp256k1 + 'a> {
-    Box::new(move |message| suite.hash_to_curve(domain_prefix, message))
+// Simplified SWU for AB == 0 <https://www.rfc-editor.org/rfc/rfc9380.html#name-simplified-swu-for-ab-0>
+//
+// E': y'^2 = x'^3 + A' * x' + B', where
+//   A': 0x3f8731abdd661adca08a5558f0f5d272e953d363cb6f0e5d405447c01a444533
+//   B': 1771
+// (reference: <https://www.rfc-editor.org/rfc/rfc9380.html#name-suites-for-secp256k1>)
+pub const ISO_SECP_A: Fp = Fp::from_raw([
+    0x405447c01a444533,
+    0xe953d363cb6f0e5d,
+    0xa08a5558f0f5d272,
+    0x3f8731abdd661adc,
+]);
+pub const ISO_SECP_B: Fp = Fp::from_raw([1771, 0, 0, 0]);
+
+const ISO_SECP_GENERATOR_X: Fp = Fp::from_raw([
+    0xD11D739D05A9F7A8,
+    0x00E448E38AF94593,
+    0x2287B72788F0933A,
+    0xC49B6C192E36AB1A,
+]);
+const ISO_SECP_GENERATOR_Y: Fp = Fp::from_raw([
+    0x10836BBAD9E12F4F,
+    0xC054381C214E65D4,
+    0x6DF11CC434B9FAC0,
+    0x9A9322D799106965,
+]);
+
+impl group::cofactor::CofactorGroup for IsoSecp256k1 {
+    type Subgroup = IsoSecp256k1;
+
+    fn clear_cofactor(&self) -> Self {
+        *self
+    }
+
+    fn into_subgroup(self) -> CtOption<Self::Subgroup> {
+        CtOption::new(self, 1.into())
+    }
+
+    fn is_torsion_free(&self) -> Choice {
+        1.into()
+    }
+}
+
+new_curve_impl!(
+    (pub(crate)),
+    IsoSecp256k1,
+    IsoSecp256k1Affine,
+    true,
+    Fp,
+    Fq,
+    (ISO_SECP_GENERATOR_X, ISO_SECP_GENERATOR_Y),
+    ISO_SECP_A,
+    ISO_SECP_B,
+    "secp256k1",
+    |curve_id, domain_prefix| sswu_hash_to_curve(curve_id, domain_prefix, IsoSecp256k1::SSWU_Z),
+);
+
+impl IsoSecp256k1 {
+    // Z = -11 (reference: <https://www.rfc-editor.org/rfc/rfc9380.html#name-suites-for-secp256k1>)
+    // 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc24
+    // NOTE: This `Z` is the `SSWU_Z` of `Secp256k1` curve.
+    const SSWU_Z: Fp = Fp::from_raw([
+        0xfffffffefffffc24,
+        0xffffffffffffffff,
+        0xffffffffffffffff,
+        0xffffffffffffffff,
+    ]);
 }
 
 /// 3-Isogeny Map for Secp256k1
 /// Reference: <https://www.rfc-editor.org/rfc/rfc9380.html#name-3-isogeny-map-for-secp256k1>
-pub(crate) fn iso_map(x: Fp, y: Fp, z: Fp) -> Secp256k1 {
+pub(crate) fn iso_map_secp256k1(rp: IsoSecp256k1) -> Secp256k1 {
     // constants for secp256k1 iso_map computation
     const K: [[Fp; 4]; 5] = [
         [Fp::ZERO; 4],
@@ -202,88 +246,112 @@ pub(crate) fn iso_map(x: Fp, y: Fp, z: Fp) -> Secp256k1 {
         ],
     ];
 
+    let (x, y, z) = rp.jacobian_coordinates();
+
     let z2 = z.square();
     let z3 = z2 * z;
+    let z4 = z2.square();
+    let z6 = z3.square();
 
-    // iso_map logic (avoid inversion) in projective coordinates
+    // iso_map logic (avoid inversion)
     //   reference: <https://github.com/zcash/pasta_curves/blob/main/src/hashtocurve.rs#L80-L106>
-    let x_num = ((K[1][3] * x + K[1][2] * z) * x + K[1][1] * z2) * x + K[1][0] * z3;
-    let x_den = (z * x + K[2][1] * z2) * x + K[2][0] * z3;
+    let x_num = ((K[1][3] * x + K[1][2] * z2) * x + K[1][1] * z4) * x + K[1][0] * z6;
+    let x_den = (z2 * x + K[2][1] * z4) * x + K[2][0] * z6;
 
-    let y_num = (((K[3][3] * x + K[3][2] * z) * x + K[3][1] * z2) * x + K[3][0] * z3) * y;
-    let y_den = (((x + K[4][2] * z) * x + K[4][1] * z2) * x + K[4][0] * z3) * z;
+    let y_num = (((K[3][3] * x + K[3][2] * z2) * x + K[3][1] * z4) * x + K[3][0] * z6) * y;
+    let y_den = (((x + K[4][2] * z2) * x + K[4][1] * z4) * x + K[4][0] * z6) * z3;
 
     let z = x_den * y_den;
-    let x = x_num * y_den;
-    let y = y_num * x_den;
+    let x = x_num * y_den * z;
+    let y = y_num * x_den * z.square();
 
-    Secp256k1 { x, y, z }
+    Secp256k1::new_jacobian(x, y, z).unwrap()
 }
 
 #[cfg(test)]
-mod test {
-    use group::UncompressedEncoding;
-    use rand_core::OsRng;
-
+mod tests {
     use super::*;
-    use crate::{serde::SerdeObject, tests::curve::TestH2C};
 
-    crate::curve_testing_suite!(Secp256k1);
-    crate::curve_testing_suite!(Secp256k1, "endo_consistency");
-    crate::curve_testing_suite!(Secp256k1, "ecdsa_example");
-    crate::curve_testing_suite!(
-        Secp256k1,
-        "constants",
-        Fp::MODULUS,
-        SECP_A,
-        SECP_B,
-        SECP_GENERATOR_X,
-        SECP_GENERATOR_Y,
-        Fq::MODULUS
-    );
+    #[test]
+    fn test_curve() {
+        crate::tests::curve::curve_tests::<Secp256k1>();
+    }
 
     #[test]
     fn test_hash_to_curve() {
-        // Test vectors are taken from
-        // https://www.ietf.org/archive/id/draft-irtf-cfrg-hash-to-curve-16.html#name-expand_message_xmdsha-256
-        [
-            TestH2C::<Secp256k1Affine>::new(
-                b"",
-                crate::tests::point_from_hex(
-                    "c1cae290e291aee617ebaef1be6d73861479c48b841eaba9b7b5852ddfeb1346",
-                    "64fa678e07ae116126f08b022a94af6de15985c996c3a91b64c406a960e51067",
-                ),
-            ),
-            TestH2C::<Secp256k1Affine>::new(
-                b"abc",
-                crate::tests::point_from_hex(
-                    "3377e01eab42db296b512293120c6cee72b6ecf9f9205760bd9ff11fb3cb2c4b",
-                    "7f95890f33efebd1044d382a01b1bee0900fb6116f94688d487c6c7b9c8371f6",
-                ),
-            ),
-            TestH2C::<Secp256k1Affine>::new(
-                b"abcdef0123456789",
-                crate::tests::point_from_hex(
-                    "bac54083f293f1fe08e4a70137260aa90783a5cb84d3f35848b324d0674b0e3a",
-                    "4436476085d4c3c4508b60fcf4389c40176adce756b398bdee27bca19758d828",
-                ),
-            ),
-            TestH2C::<Secp256k1Affine>::new(
-                b"q128_qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
-                crate::tests::point_from_hex(
-                    "e2167bc785333a37aa562f021f1e881defb853839babf52a7f72b102e41890e9",
-                    "f2401dd95cc35867ffed4f367cd564763719fbc6a53e969fb8496a1e6685d873",
-                ),
-            ), //
-            TestH2C::<Secp256k1Affine>::new(
-                b"a512_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                crate::tests::point_from_hex(
-                    "e3c8d35aaaf0b9b647e88a0a0a7ee5d5bed5ad38238152e4e6fd8c1f8cb7c998",
-                    "8446eeb6181bf12f56a9d24e262221cc2f0c4725c7e3803024b5888ee5823aa6",
-                ),
-            ),
-        ].iter().for_each(|test| {
-            test.run("QUUX-V01-CS02-with-");
-        });
+        crate::tests::curve::hash_to_curve_test::<Secp256k1>();
+    }
+
+    #[test]
+    fn test_serialization() {
+        crate::tests::curve::random_serialization_test::<Secp256k1>();
+        #[cfg(feature = "derive_serde")]
+        crate::tests::curve::random_serde_test::<Secp256k1>();
+    }
+
+    #[test]
+    fn test_endo_consistency() {
+        let g = Secp256k1::generator();
+        assert_eq!(g * Fq::ZETA, g.endo());
+    }
+
+    #[test]
+    fn ecdsa_example() {
+        use crate::group::Curve;
+        use crate::CurveAffine;
+        use ff::FromUniformBytes;
+        use rand::rngs::OsRng;
+
+        fn mod_n(x: Fp) -> Fq {
+            let mut x_repr = [0u8; 32];
+            x_repr.copy_from_slice(x.to_repr().as_ref());
+            let mut x_bytes = [0u8; 64];
+            x_bytes[..32].copy_from_slice(&x_repr[..]);
+            Fq::from_uniform_bytes(&x_bytes)
+        }
+
+        let g = Secp256k1::generator();
+
+        for _ in 0..1000 {
+            // Generate a key pair
+            let sk = Fq::random(OsRng);
+            let pk = (g * sk).to_affine();
+
+            // Generate a valid signature
+            // Suppose `m_hash` is the message hash
+            let msg_hash = Fq::random(OsRng);
+
+            let (r, s) = {
+                // Draw arandomness
+                let k = Fq::random(OsRng);
+                let k_inv = k.invert().unwrap();
+
+                // Calculate `r`
+                let r_point = (g * k).to_affine().coordinates().unwrap();
+                let x = r_point.x();
+                let r = mod_n(*x);
+
+                // Calculate `s`
+                let s = k_inv * (msg_hash + (r * sk));
+
+                (r, s)
+            };
+
+            {
+                // Verify
+                let s_inv = s.invert().unwrap();
+                let u_1 = msg_hash * s_inv;
+                let u_2 = r * s_inv;
+
+                let v_1 = g * u_1;
+                let v_2 = pk * u_2;
+
+                let r_point = (v_1 + v_2).to_affine().coordinates().unwrap();
+                let x_candidate = r_point.x();
+                let r_candidate = mod_n(*x_candidate);
+
+                assert_eq!(r, r_candidate);
+            }
+        }
     }
 }
