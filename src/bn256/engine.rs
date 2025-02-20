@@ -755,6 +755,7 @@ pub fn pairing(g1: &G1Affine, g2: &G2Affine) -> Gt {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "derive_serde", derive(Serialize, Deserialize))]
 pub struct Bn256;
 
 impl Engine for Bn256 {
