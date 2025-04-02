@@ -26,14 +26,14 @@ use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 // integers in little-endian order. `Fq` values are always in
 // Montgomery form; i.e., Fq(a) = aR mod q, with R = 2^256.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Fq(pub(crate) [u64; 4]);
+pub struct Fq(pub [u64; 4]);
 
 #[cfg(feature = "derive_serde")]
 crate::serialize_deserialize_32_byte_primefield!(Fq);
 
 /// Constant representing the modulus
 /// q = 0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47
-const MODULUS: Fq = Fq([
+pub const MODULUS: Fq = Fq([
     0x3c208c16d87cfd47,
     0x97816a916871ca8d,
     0xb85045b68181585d,
@@ -159,9 +159,11 @@ impl Fq {
     pub const fn size() -> usize {
         32
     }
+
 }
 
 extend_field_legendre!(Fq);
+
 
 impl ff::Field for Fq {
     const ZERO: Self = Self::zero();
@@ -244,6 +246,8 @@ impl ff::PrimeField for Fq {
 
         CtOption::new(tmp, Choice::from(is_some))
     }
+
+
 
     fn to_repr(&self) -> Self::Repr {
         let tmp: [u64; 4] = (*self).into();
