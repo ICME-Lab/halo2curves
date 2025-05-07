@@ -25,9 +25,7 @@ getrandom = { version = "0.2", features = ["js"] }
 
 [dependencies]
 subtle = "2.4"
-# ff = { version = "0.13.0", default-features = false, features = ["std"] }
-# ff = { path = "../ff", default-features = false, features = ["std"] }
-ff = { git = "https://github.com/ICME-Lab/ff", branch = "main", default-features = false, features = ["std"] }
+ff = { version = "0.13.0", default-features = false, features = ["std"] }
 
 group = "0.13.0"
 pairing = "0.23.0"
@@ -87,6 +85,3 @@ harness = false
 name = "msm"
 harness = false
 required-features = ["multicore"]
-
-[patch.crates-io]
-ff = { git = "https://github.com/ICME-Lab/ff", branch = "main" }

@@ -80,6 +80,30 @@ const R3: Fq = Fq([
     0x20fd6e902d592544,
 ]);
 
+/// R = 2^260 mod q
+// const R: Fq = Fq([
+//     0x45520880f6fce4b4,
+//     0x49890849baa989a8,
+//     0x85a9201d818f014a,
+//     0x1f16424e1bb7724f,
+// ]);
+
+// /// R² = 2^520 mod q
+// const R2: Fq = Fq([
+//     0xb868a81d1966eb04,
+//     0x98e6156195018016,
+//     0xbfd531600b4f898c,
+//     0x0a8469a30d3a9969,
+// ]);
+
+// /// R³ = 2^780 mod q
+// const R3: Fq = Fq([
+//     0x13e324783fe3a1a8,
+//     0xc59c28976ad256c5,
+//     0xc53872393603f972,
+//     0x10f16ded8d1987f5,
+// ]);
+
 pub const NEGATIVE_ONE: Fq = Fq([
     0x68c3488912edefaa,
     0x8d087f6872aabf4f,
@@ -247,27 +271,27 @@ impl ff::PrimeField for Fq {
         CtOption::new(tmp, Choice::from(is_some))
     }
 
-    fn from_montgomery_repr(repr: Self::Repr) -> CtOption<Self> {
-        let mut tmp = Fq::zero();
+    // fn from_montgomery_repr(repr: Self::Repr) -> CtOption<Self> {
+    //     let mut tmp = Fq::zero();
 
-        tmp.0[0] = u64::from_le_bytes(repr[0..8].try_into().unwrap());
-        tmp.0[1] = u64::from_le_bytes(repr[8..16].try_into().unwrap());
-        tmp.0[2] = u64::from_le_bytes(repr[16..24].try_into().unwrap());
-        tmp.0[3] = u64::from_le_bytes(repr[24..32].try_into().unwrap());
+    //     tmp.0[0] = u64::from_le_bytes(repr[0..8].try_into().unwrap());
+    //     tmp.0[1] = u64::from_le_bytes(repr[8..16].try_into().unwrap());
+    //     tmp.0[2] = u64::from_le_bytes(repr[16..24].try_into().unwrap());
+    //     tmp.0[3] = u64::from_le_bytes(repr[24..32].try_into().unwrap());
 
-        // Try to subtract the modulus
-        let (_, borrow) = sbb(tmp.0[0], MODULUS.0[0], 0);
-        let (_, borrow) = sbb(tmp.0[1], MODULUS.0[1], borrow);
-        let (_, borrow) = sbb(tmp.0[2], MODULUS.0[2], borrow);
-        let (_, borrow) = sbb(tmp.0[3], MODULUS.0[3], borrow);
+    //     // Try to subtract the modulus
+    //     let (_, borrow) = sbb(tmp.0[0], MODULUS.0[0], 0);
+    //     let (_, borrow) = sbb(tmp.0[1], MODULUS.0[1], borrow);
+    //     let (_, borrow) = sbb(tmp.0[2], MODULUS.0[2], borrow);
+    //     let (_, borrow) = sbb(tmp.0[3], MODULUS.0[3], borrow);
 
-        // If the element is smaller than MODULUS then the
-        // subtraction will underflow, producing a borrow value
-        // of 0xffff...ffff. Otherwise, it'll be zero.
-        let is_some = (borrow as u8) & 1;
+    //     // If the element is smaller than MODULUS then the
+    //     // subtraction will underflow, producing a borrow value
+    //     // of 0xffff...ffff. Otherwise, it'll be zero.
+    //     let is_some = (borrow as u8) & 1;
 
-        CtOption::new(tmp, Choice::from(is_some))
-    }
+    //     CtOption::new(tmp, Choice::from(is_some))
+    // }
 
     fn to_repr(&self) -> Self::Repr {
         let tmp: [u64; 4] = (*self).into();
@@ -280,16 +304,16 @@ impl ff::PrimeField for Fq {
         res
     }
 
-    fn to_montgomery_repr(&self) -> Self::Repr {
-        let tmp: [u64; 4] = self.0; 
-        let mut res = [0; 32];
-        res[0..8].copy_from_slice(&tmp[0].to_le_bytes());
-        res[8..16].copy_from_slice(&tmp[1].to_le_bytes());
-        res[16..24].copy_from_slice(&tmp[2].to_le_bytes());
-        res[24..32].copy_from_slice(&tmp[3].to_le_bytes());
+    // fn to_montgomery_repr(&self) -> Self::Repr {
+    //     let tmp: [u64; 4] = self.0; 
+    //     let mut res = [0; 32];
+    //     res[0..8].copy_from_slice(&tmp[0].to_le_bytes());
+    //     res[8..16].copy_from_slice(&tmp[1].to_le_bytes());
+    //     res[16..24].copy_from_slice(&tmp[2].to_le_bytes());
+    //     res[24..32].copy_from_slice(&tmp[3].to_le_bytes());
 
-        res
-    }
+    //     res
+    // }
 
     fn is_odd(&self) -> Choice {
         Choice::from(self.to_repr()[0] & 1)
